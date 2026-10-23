@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graphic Beauty</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Graphic Beauty</h1>
+    <div class="controls">
+      <div class="seg" role="radiogroup" aria-label="Edge direction">
+        <label><input type="radio" name="directed" value="0" checked><span>Undirected</span></label>
+        <label><input type="radio" name="directed" value="1"><span>Directed</span></label>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="Edge weights">
+        <label><input type="radio" name="weighted" value="0" checked><span>Unweighted</span></label>
+        <label><input type="radio" name="weighted" value="1"><span>Weighted</span></label>
+      </div>
+      <label class="field">Type <select id="preset"></select></label>
+      <label class="field">Example <select id="example"></select></label>
+      <button id="delete" type="button">Delete selected</button>
+      <button id="clear" type="button">Clear</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="pane">
+      <h2>Your graph</h2>
+      <svg id="editor" class="canvas editable" viewBox="0 0 800 600"></svg>
+      <p class="hint">
+        Click empty space to add a vertex · click a vertex, then another (or double-click it) to add an edge ·
+        type to relabel a vertex or re-weight an edge · drag an edge's handles to curve it ·
+        Esc deselects · Delete removes
+      </p>
+    </section>
+
+    <section class="pane">
+      <h2>Beautified</h2>
+      <svg id="result" class="canvas" viewBox="0 0 800 600"></svg>
+      <p class="hint" id="status">A copy of your graph. Press Beautify to rearrange it.</p>
+    </section>
+
+    <aside>
+      <h2>Priorities</h2>
+      <p class="hint">Drag to reorder — higher matters more. Uncheck to ignore.</p>
+      <ol id="heuristics"></ol>
+      <button id="beautify" type="button" class="primary">Beautify</button>
+    </aside>
+  </main>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

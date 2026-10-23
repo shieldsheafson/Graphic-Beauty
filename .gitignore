@@ -1,0 +1,15 @@
+# Build output (regenerate with `node build.mjs`)
+dist/
+
+# OS / editor clutter
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Node, if dependencies are ever added
+node_modules/
