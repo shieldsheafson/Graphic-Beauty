@@ -103,6 +103,18 @@ main {
 
 .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 
+.pane-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-bottom: 8px; }
+.pane-head h2 { margin: 0; }
+.pane-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pane-actions button { font-size: 12px; padding: 3px 8px; }
+
+.scale { display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.scale input { flex: 1; accent-color: var(--accent); }
+.scale output { width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
+
+.algo { margin-top: 12px; width: 100%; }
+.algo select { flex: 1; min-width: 0; }
+
 /* ---- canvas ---- */
 .canvas {
   display: block;

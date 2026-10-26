@@ -27,18 +27,35 @@
 
   <main>
     <section class="pane">
-      <h2>Your graph</h2>
+      <div class="pane-head">
+        <h2>Your graph</h2>
+        <div class="pane-actions">
+          <button id="import" type="button" title="Load a graph from a .json file">Import</button>
+          <button id="export" type="button" title="Save your graph as a .json file">Export</button>
+          <input id="import-file" type="file" accept=".json,application/json" hidden>
+        </div>
+      </div>
       <svg id="editor" class="canvas editable" viewBox="0 0 800 600"></svg>
       <p class="hint">
         Click empty space to add a vertex · click a vertex, then another (or double-click it) to add an edge ·
         type to relabel a vertex or re-weight an edge · drag an edge's handles to curve it ·
-        Esc deselects · Delete removes
+        right-click deletes · Esc deselects
       </p>
     </section>
 
     <section class="pane">
-      <h2>Beautified</h2>
+      <div class="pane-head">
+        <h2>Beautified</h2>
+        <div class="pane-actions">
+          <button id="to-left" type="button" title="Replace your graph with this layout">← Copy to your graph</button>
+          <button id="to-right" type="button" title="Replace this layout with your graph">Copy from your graph</button>
+        </div>
+      </div>
       <svg id="result" class="canvas" viewBox="0 0 800 600"></svg>
+      <label class="scale">Scale
+        <input id="scale" type="range" min="20" max="150" step="5" value="100">
+        <output id="scale-value">100%</output>
+      </label>
       <p class="hint" id="status">A copy of your graph. Press Beautify to rearrange it.</p>
     </section>
 
@@ -46,6 +63,12 @@
       <h2>Priorities</h2>
       <p class="hint">Drag to reorder — higher matters more. Uncheck to ignore.</p>
       <ol id="heuristics"></ol>
+      <label class="field algo">Method
+        <select id="algorithm">
+          <option value="anneal">Balanced: weighs all priorities</option>
+          <option value="strict">Strict: one priority at a time</option>
+        </select>
+      </label>
       <button id="beautify" type="button" class="primary">Beautify</button>
     </aside>
   </main>

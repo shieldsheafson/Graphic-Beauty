@@ -53,9 +53,29 @@ export function findEdge(g, u, v) {
 export function addEdge(g, u, v, weight = 1) {
   const existing = findEdge(g, u, v);
   if (existing) return existing;
-  const e = { id: g.nextId++, u, v, weight, weightText: String(weight), ctrl: null };
+  // bend: null = automatic (see effectiveBend); ctrl: user-dragged control points.
+  const e = { id: g.nextId++, u, v, weight, weightText: String(weight), bend: null, ctrl: null };
   g.edges.push(e);
   return e;
+}
+
+// Antiparallel directed edges bend apart automatically so both stay visible.
+export const AUTO_BEND = 0.2;
+
+export function effectiveBend(g, e) {
+  if (e.bend != null) return e.bend;
+  return g.directed && g.edges.some(o => o !== e && o.u === e.v && o.v === e.u) ? AUTO_BEND : 0;
+}
+
+// Positions of the vertices joined to `id` by non-loop edges (used to aim loops).
+export function neighborPoints(g, id) {
+  const ids = new Set();
+  for (const e of g.edges) {
+    if (e.u === e.v) continue;
+    if (e.u === id) ids.add(e.v);
+    else if (e.v === id) ids.add(e.u);
+  }
+  return g.vertices.filter(v => ids.has(v.id));
 }
 
 export function removeVertex(g, id) {
@@ -76,4 +96,48 @@ export function clampToCanvas(x, y, pad = MARGIN) {
     x: Math.min(W - pad, Math.max(pad, x)),
     y: Math.min(H - pad, Math.max(pad, y)),
   };
+}
+
+// ---- import / export --------------------------------------------------------
+
+export function serializeGraph(g) {
+  return JSON.stringify({
+    format: 'graphic-beauty',
+    version: 1,
+    directed: g.directed,
+    weighted: g.weighted,
+    vertices: g.vertices.map(({ id, label, x, y }) => ({ id, label, x, y })),
+    edges: g.edges.map(({ u, v, weight, bend, ctrl }) => ({ u, v, weight, bend, ctrl })),
+  }, null, 2);
+}
+
+// Throws an Error with a readable message if the text isn't a usable graph.
+export function parseGraph(text) {
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error('That file is not valid JSON.'); }
+  if (!data || !Array.isArray(data.vertices) || !Array.isArray(data.edges)) {
+    throw new Error('Expected an object with "vertices" and "edges" lists.');
+  }
+  const num = (x, fallback) => (Number.isFinite(x) ? x : fallback);
+  const g = createGraph({ directed: !!data.directed, weighted: !!data.weighted });
+  const ids = new Set();
+  for (const v of data.vertices) {
+    const id = num(v.id, NaN);
+    if (!Number.isInteger(id) || ids.has(id)) throw new Error('Every vertex needs a unique integer "id".');
+    ids.add(id);
+    const p = clampToCanvas(num(v.x, W / 2), num(v.y, H / 2), 0);
+    g.vertices.push({ id, label: v.label == null ? '' : String(v.label), x: p.x, y: p.y });
+  }
+  g.nextId = Math.max(0, ...ids) + 1;
+  for (const e of data.edges) {
+    if (!ids.has(e.u) || !ids.has(e.v) || findEdge(g, e.u, e.v)) continue;
+    const ctrl = Array.isArray(e.ctrl) && e.ctrl.length === 2 && e.ctrl.every(c => Number.isFinite(c?.x) && Number.isFinite(c?.y))
+      ? e.ctrl.map(c => ({ x: c.x, y: c.y })) : null;
+    const weight = num(e.weight, 1);
+    g.edges.push({
+      id: g.nextId++, u: e.u, v: e.v, weight, weightText: String(weight),
+      bend: Number.isFinite(e.bend) ? e.bend : null, ctrl,
+    });
+  }
+  return g;
 }

@@ -1,8 +1,10 @@
-import { createGraph, cloneGraph } from './graph.js';
+import { createGraph, cloneGraph, serializeGraph, parseGraph, W, H } from './graph.js';
 import { renderGraph, edgeControls } from './render.js';
 import { createEditor } from './editor.js';
 import { HEURISTICS, evaluate } from './heuristics.js';
-import { optimize, animate } from './optimizer.js';
+import { buildLayout, fitLayout } from './layout.js';
+import { optimizeAnneal, animate } from './optimizer.js';
+import { optimizeStrict } from './strict.js';
 import { PRESETS } from './presets.js';
 import { EXAMPLE_NAMES, buildExample } from './examples.js';
 
@@ -11,13 +13,21 @@ const leftSvg = $('#editor');
 const rightSvg = $('#result');
 const list = $('#heuristics');
 const status = $('#status');
+const scaleInput = $('#scale');
 const MOVE_MS = 1200;
+const ALGORITHMS = { anneal: optimizeAnneal, strict: optimizeStrict };
 
 const state = { graph: createGraph(), selection: null };
+
+// The right pane mirrors your graph until it is beautified; after that it
+// keeps its layout, and edits on the left only mark it out of date.
 let copy = cloneGraph(state.graph);
+let base = null; // copy's positions and curves at 100% scale
+let beautified = false;
+let stale = false;
 let run = null;
 
-const editor = createEditor(leftSvg, state, syncCopy);
+const editor = createEditor(leftSvg, state, onLeftEdit);
 
 // ---- right pane -----------------------------------------------------------
 
@@ -25,40 +35,84 @@ function stopRun() {
   run?.cancel();
   run = null;
   $('#beautify').disabled = false;
+  scaleInput.disabled = false;
 }
 
-function syncCopy() {
+function snapshot(g) {
+  return {
+    pos: g.vertices.map(v => ({ x: v.x, y: v.y })),
+    ctrl: g.edges.map(e => e.ctrl && e.ctrl.map(c => ({ ...c }))),
+  };
+}
+
+function setScaleLabel() {
+  $('#scale-value').textContent = `${scaleInput.value}%`;
+}
+
+function copyFromLeft(message = 'A copy of your graph. Press Beautify to rearrange it.') {
   stopRun();
   copy = cloneGraph(state.graph);
+  base = snapshot(copy);
+  scaleInput.value = 100;
+  setScaleLabel();
+  beautified = false;
+  stale = false;
   renderRight();
-  status.textContent = 'A copy of your graph. Press Beautify to rearrange it.';
+  status.textContent = message;
+}
+
+function onLeftEdit() {
+  if (!beautified) {
+    copyFromLeft();
+  } else if (!stale) {
+    stale = true;
+    status.textContent = 'Your graph has changed. Beautify starts from the new version; '
+      + '"Copy from your graph" shows it here as is.';
+  }
 }
 
 function renderRight() {
-  renderGraph(rightSvg, copy);
+  renderGraph(rightSvg, copy, { grid: false });
   const values = evaluate(copy);
   for (const li of list.children) {
     li.querySelector('.value').textContent = values[li.dataset.id].toFixed(3);
   }
 }
 
+// Scale about the canvas centre, relative to `base`.
+const scaled = (q, s) => ({ x: W / 2 + (q.x - W / 2) * s, y: H / 2 + (q.y - H / 2) * s });
+
+function applyScale() {
+  const s = scaleInput.value / 100;
+  copy.vertices.forEach((v, i) => Object.assign(v, scaled(base.pos[i], s)));
+  copy.edges.forEach((e, i) => { e.ctrl = base.ctrl[i] && base.ctrl[i].map(c => scaled(c, s)); });
+  renderRight();
+}
+
+scaleInput.addEventListener('input', () => {
+  setScaleLabel();
+  if (!run) applyScale();
+});
+
 $('#beautify').addEventListener('click', () => {
   stopRun();
+  if (stale || !beautified) copyFromLeft();
   const order = [...list.children].filter(li => li.querySelector('input').checked).map(li => li.dataset.id);
   if (!copy.vertices.length) {
     status.textContent = 'Draw a graph on the left first.';
     return;
   }
+  beautified = true;
   status.textContent = 'Optimizing… 0%';
   $('#beautify').disabled = true;
-  run = optimize(copy, order, PRESETS[$('#preset').value], {
+  scaleInput.disabled = true;
+  run = ALGORITHMS[$('#algorithm').value](copy, order, PRESETS[$('#preset').value], {
     onProgress(t) { status.textContent = `Optimizing… ${Math.round(t * 100)}%`; },
-    onDone(best) {
+    onDone(result) {
       status.textContent = 'Moving to the new layout…';
-      run = animateTo(best, () => {
-        run = null;
-        $('#beautify').disabled = false;
-        status.textContent = 'Done. Press Beautify again to keep refining from here.';
+      run = animateTo(result, () => {
+        stopRun();
+        status.textContent = 'Done. Press Beautify again to try another layout.';
       });
     },
   });
@@ -66,16 +120,23 @@ $('#beautify').addEventListener('click', () => {
 
 const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
 
-// Glide vertices to `best`, while edge curves relax into their default shape
-// at the new positions.
-function animateTo(best, onDone) {
+// Fit the result to the canvas, then glide vertices there while every edge
+// morphs from its current shape into its new one.
+function animateTo(result, onDone) {
+  const L = buildLayout(copy);
+  L.p.set(result.p);
+  L.bend.set(result.bend);
+  fitLayout(L);
+
+  const s = scaleInput.value / 100;
+  base = { pos: copy.vertices.map((_, i) => ({ x: L.p[2 * i], y: L.p[2 * i + 1] })), ctrl: copy.edges.map(() => null) };
   const fromV = copy.vertices.map(v => ({ x: v.x, y: v.y }));
-  const toV = copy.vertices.map((_, i) => ({ x: best[2 * i], y: best[2 * i + 1] }));
-  const fromC = copy.edges.map(e => edgeControls(copy, e).slice(1, 3).map(c => ({ ...c })));
+  const toV = base.pos.map(q => scaled(q, s));
+  const fromC = copy.edges.map(e => edgeControls(copy, e).slice(1, 3));
 
   copy.vertices.forEach((v, i) => Object.assign(v, toV[i]));
-  for (const e of copy.edges) e.ctrl = null;
-  const toC = copy.edges.map(e => edgeControls(copy, e).slice(1, 3).map(c => ({ ...c })));
+  copy.edges.forEach((e, k) => { e.ctrl = null; e.bend = e.u === e.v ? null : L.bend[k]; });
+  const toC = copy.edges.map(e => edgeControls(copy, e).slice(1, 3));
 
   return animate(MOVE_MS, k => {
     copy.vertices.forEach((v, i) => Object.assign(v, lerp(fromV[i], toV[i], k)));
@@ -88,6 +149,50 @@ function animateTo(best, onDone) {
   });
 }
 
+$('#to-right').addEventListener('click', () => copyFromLeft('Copied from your graph.'));
+$('#to-left').addEventListener('click', () => {
+  stopRun();
+  state.graph = cloneGraph(copy);
+  editor.select(null);
+  editor.render();
+  stale = false;
+  status.textContent = 'Copied to your graph.';
+});
+
+// ---- import / export ------------------------------------------------------
+
+$('#export').addEventListener('click', () => {
+  const blob = new Blob([serializeGraph(state.graph)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'graph.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+$('#import').addEventListener('click', () => $('#import-file').click());
+$('#import-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    loadGraph(parseGraph(await file.text()));
+    status.textContent = `Imported ${file.name}.`;
+  } catch (err) {
+    status.textContent = `Couldn't import ${file.name}: ${err.message}`;
+  }
+});
+
+function loadGraph(g) {
+  state.graph = g;
+  for (const name of ['directed', 'weighted']) {
+    document.querySelector(`input[name=${name}][value="${g[name] ? 1 : 0}"]`).checked = true;
+  }
+  editor.select(null);
+  editor.render();
+  copyFromLeft();
+}
+
 // ---- toolbar --------------------------------------------------------------
 
 for (const name of ['directed', 'weighted']) {
@@ -95,7 +200,7 @@ for (const name of ['directed', 'weighted']) {
     input.addEventListener('change', () => {
       state.graph[name] = input.value === '1';
       editor.render();
-      syncCopy();
+      copyFromLeft();
     });
   }
 }
@@ -111,20 +216,12 @@ exampleSel.add(new Option('Load…', ''));
 for (const [key, name] of Object.entries(EXAMPLE_NAMES)) exampleSel.add(new Option(name, key));
 exampleSel.addEventListener('change', () => {
   if (!exampleSel.value) return;
-  state.graph = buildExample(exampleSel.value, state.graph);
-  editor.select(null);
+  loadGraph(buildExample(exampleSel.value, state.graph));
   exampleSel.value = '';
-  editor.render();
-  syncCopy();
 });
 
 $('#delete').addEventListener('click', () => editor.deleteSelection());
-$('#clear').addEventListener('click', () => {
-  state.graph = createGraph(state.graph);
-  editor.select(null);
-  editor.render();
-  syncCopy();
-});
+$('#clear').addEventListener('click', () => loadGraph(createGraph(state.graph)));
 
 // ---- reorderable heuristic list -------------------------------------------
 
@@ -177,4 +274,4 @@ list.addEventListener('dragover', e => {
 });
 
 editor.render();
-syncCopy();
+copyFromLeft();

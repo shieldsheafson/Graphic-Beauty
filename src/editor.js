@@ -1,7 +1,8 @@
 import {
   addVertex, addEdge, getVertex, getEdge, removeVertex, removeEdge, clampToCanvas,
 } from './graph.js';
-import { R, edgeControls, renderGraph } from './render.js';
+import { edgeControls, renderGraph } from './render.js';
+import { R } from './geometry.js';
 
 const DRAG_THRESHOLD = 4;
 const DOUBLE_CLICK_MS = 350;
@@ -47,7 +48,8 @@ export function createEditor(svg, state, onChange) {
   }
 
   svg.addEventListener('pointerdown', ev => {
-    if (ev.button !== 0) return;
+    // ctrl-click is a right click on macOS; contextmenu handles it.
+    if (ev.button !== 0 || ev.ctrlKey) return;
     const p = toSvg(ev);
     const h = ev.target.closest('[data-handle]');
     const vEl = ev.target.closest('[data-vid]');
@@ -118,6 +120,19 @@ export function createEditor(svg, state, onChange) {
         addVertex(g, p.x, p.y);
       }
     }
+    render();
+    onChange(true);
+  });
+
+  // Right click deletes the vertex or edge under the cursor.
+  svg.addEventListener('contextmenu', ev => {
+    ev.preventDefault();
+    const vEl = ev.target.closest('[data-vid]');
+    const eEl = ev.target.closest('[data-eid]');
+    if (vEl) removeVertex(state.graph, +vEl.dataset.vid);
+    else if (eEl) removeEdge(state.graph, +eEl.dataset.eid);
+    else return;
+    select(null);
     render();
     onChange(true);
   });

@@ -1,9 +1,12 @@
-import { BY_ID, penalty, buildContext } from './heuristics.js';
-import { W, H, GRID, MARGIN } from './graph.js';
+import { BY_ID, penalty, bestGrid } from './heuristics.js';
+import { buildLayout, updatePolys } from './layout.js';
+import { W, H, MARGIN } from './graph.js';
 
 // Each step down the priority list is worth this fraction of the one above.
 const DECAY = 0.3;
 const PENALTY_WEIGHT = 10;
+const BEND_REGULARIZER = 1e-3; // keeps unused curvature from drifting when nothing cares
+const MAX_BEND = 0.8;
 const DURATION_MS = 3000; // total compute time spent annealing
 const CHUNK_MS = 40; // work per slice, yielding to the UI in between
 
@@ -11,117 +14,125 @@ function gauss() {
   return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
 }
 
-// Simulated annealing on vertex positions, scored by the ordered heuristics.
-// Runs in slices off the UI's critical path and finishes with
-// onDone(bestPositions, bestCost); it never touches the graph itself.
-export function optimize(graph, order, preset, { onProgress, onDone }) {
-  const { p, ctx } = buildContext(graph);
-  const n = ctx.n;
+export const clampX = x => Math.min(W - MARGIN, Math.max(MARGIN, x));
+export const clampY = y => Math.min(H - MARGIN, Math.max(MARGIN, y));
+
+// Runs `work(progressSoFar)` in slices between UI frames until it returns true.
+// Progress is tracked as compute time, so a throttled background tab yields
+// the same result, just later.
+export function runInSlices(work, onProgress, onDone) {
+  let computed = 0, timer = 0;
+  function slice() {
+    const begin = performance.now();
+    const finished = work(() => computed + performance.now() - begin, begin + CHUNK_MS);
+    computed += performance.now() - begin;
+    if (finished) onDone();
+    else {
+      onProgress?.(computed);
+      timer = setTimeout(slice, 0);
+    }
+  }
+  timer = setTimeout(slice, 0);
+  return { cancel: () => clearTimeout(timer) };
+}
+
+// Simulated annealing on vertex positions and edge bends, scored by a
+// weighted sum of the ordered rules. Finishes with onDone({ p, bend }).
+export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
+  const L = buildLayout(graph);
+  const { n, p, bend } = L;
+  const bendable = L.edges.map((e, k) => k).filter(k => !L.edges[k].loop);
   const hs = order.map(id => BY_ID[id]);
   const ws = hs.map((_, rank) => DECAY ** rank);
   const useGrid = order.includes('grid');
 
-  const cost = q => {
-    let c = PENALTY_WEIGHT * penalty(q, ctx);
-    for (let k = 0; k < hs.length; k++) c += ws[k] * hs[k].cost(q, ctx);
+  const cost = () => {
+    let c = PENALTY_WEIGHT * penalty(L);
+    for (let k = 0; k < hs.length; k++) c += ws[k] * hs[k].cost(L);
+    for (const k of bendable) c += BEND_REGULARIZER * Math.abs(bend[k]);
     return c;
   };
-  const clampX = x => Math.min(W - MARGIN, Math.max(MARGIN, x));
-  const clampY = y => Math.min(H - MARGIN, Math.max(MARGIN, y));
 
-  let cur = cost(p);
-  const best = p.slice();
+  let cur = cost();
+  const bestP = p.slice(), bestBend = bend.slice();
   let bestCost = cur;
+
+  const savedP = p.slice(), savedBend = bend.slice();
+  const save = () => { savedP.set(p); savedBend.set(bend); };
+  const restore = () => { p.set(savedP); bend.set(savedBend); updatePolys(L); };
 
   // Starting temperature from the typical size of a random move.
   let sum = 0;
   const samples = n ? 30 : 0;
   for (let s = 0; s < samples; s++) {
-    const i = (Math.random() * n) | 0, ox = p[2 * i], oy = p[2 * i + 1];
-    p[2 * i] = clampX(ox + gauss() * 100);
-    p[2 * i + 1] = clampY(oy + gauss() * 100);
-    sum += Math.abs(cost(p) - cur);
-    p[2 * i] = ox; p[2 * i + 1] = oy;
+    save();
+    const i = (Math.random() * n) | 0;
+    p[2 * i] = clampX(p[2 * i] + gauss() * 100);
+    p[2 * i + 1] = clampY(p[2 * i + 1] + gauss() * 100);
+    updatePolys(L);
+    sum += Math.abs(cost() - cur);
+    restore();
   }
   const T0 = sum / Math.max(1, samples) || 1e-3;
   const Tend = T0 * 1e-4;
 
-  const accept = (c, T) => {
-    if (c - cur <= 0 || Math.random() < Math.exp(-(c - cur) / T)) {
-      cur = c;
-      if (c < bestCost) { bestCost = c; best.set(p); }
-      return true;
-    }
-    return false;
-  };
-
-  // Shift the whole layout; single-vertex moves can't recenter a graph.
-  const saved = p.slice();
-  function translateStep(T, radius) {
-    let dx = gauss() * radius, dy = gauss() * radius;
-    if (useGrid && Math.random() < 0.5) {
-      dx = Math.round(dx / GRID) * GRID;
-      dy = Math.round(dy / GRID) * GRID;
-    }
-    for (let k = 0; k < n; k++) {
-      const x = p[2 * k] + dx, y = p[2 * k + 1] + dy;
-      if (x !== clampX(x) || y !== clampY(y)) return;
-    }
-    saved.set(p);
-    for (let k = 0; k < n; k++) { p[2 * k] += dx; p[2 * k + 1] += dy; }
-    if (!accept(cost(p), T)) p.set(saved);
+  function snapToGrid(i) {
+    const { x0, y0, u } = bestGrid(L);
+    p[2 * i] = clampX(x0 + Math.round((p[2 * i] - x0) / u) * u);
+    p[2 * i + 1] = clampY(y0 + Math.round((p[2 * i + 1] - y0) / u) * u);
   }
 
   function step(t) {
     const T = T0 * (Tend / T0) ** t;
     const radius = 5 + 195 * (1 - t);
-    if (n > 1 && Math.random() < 0.05) {
-      translateStep(T, radius);
-      return;
-    }
-    const i = (Math.random() * n) | 0, ox = p[2 * i], oy = p[2 * i + 1];
-    let x, y;
-    if (Math.random() < 0.1 * (1 - t)) {
-      x = MARGIN + Math.random() * (W - 2 * MARGIN);
-      y = MARGIN + Math.random() * (H - 2 * MARGIN);
-    } else {
-      x = ox + gauss() * radius;
-      y = oy + gauss() * radius;
-    }
-    if (useGrid && Math.random() < 0.3) {
-      x = Math.round(x / GRID) * GRID;
-      y = Math.round(y / GRID) * GRID;
-    }
-    p[2 * i] = clampX(x);
-    p[2 * i + 1] = clampY(y);
-    preset?.constrain?.(p, i, ctx);
-
-    if (!accept(cost(p), T)) { p[2 * i] = ox; p[2 * i + 1] = oy; }
-  }
-
-  // The schedule runs on accumulated compute time rather than wall time, so a
-  // throttled background tab yields the same quality, just later.
-  let computed = 0;
-  let timer = 0;
-
-  function chunk() {
-    const begin = performance.now();
-    const t = Math.min(1, computed / DURATION_MS);
-    if (t < 1 && n > 0) {
-      while (performance.now() - begin < CHUNK_MS) {
-        const tt = Math.min(1, (computed + performance.now() - begin) / DURATION_MS);
-        for (let k = 0; k < 20; k++) step(tt);
+    save();
+    const r = Math.random();
+    if (n > 1 && r < 0.05) {
+      // Shift the whole layout; single-vertex moves can't recenter a graph.
+      const dx = gauss() * radius, dy = gauss() * radius;
+      for (let k = 0; k < n; k++) {
+        const x = p[2 * k] + dx, y = p[2 * k + 1] + dy;
+        if (x !== clampX(x) || y !== clampY(y)) return;
       }
-      computed += performance.now() - begin;
-      onProgress?.(Math.min(1, computed / DURATION_MS));
-      timer = setTimeout(chunk, 0);
+      for (let k = 0; k < n; k++) { p[2 * k] += dx; p[2 * k + 1] += dy; }
+    } else if (bendable.length && r < 0.25) {
+      const k = bendable[(Math.random() * bendable.length) | 0];
+      bend[k] = Math.random() < 0.3 ? 0 : Math.max(-MAX_BEND, Math.min(MAX_BEND, bend[k] + gauss() * 0.3));
     } else {
-      onDone(best, bestCost);
+      const i = (Math.random() * n) | 0;
+      if (Math.random() < 0.1 * (1 - t)) {
+        p[2 * i] = MARGIN + Math.random() * (W - 2 * MARGIN);
+        p[2 * i + 1] = MARGIN + Math.random() * (H - 2 * MARGIN);
+      } else {
+        p[2 * i] = clampX(p[2 * i] + gauss() * radius);
+        p[2 * i + 1] = clampY(p[2 * i + 1] + gauss() * radius);
+      }
+      if (useGrid && Math.random() < 0.3) snapToGrid(i);
+      preset?.constrain?.(p, i, L);
+    }
+    updatePolys(L);
+
+    const c = cost();
+    if (c - cur <= 0 || Math.random() < Math.exp(-(c - cur) / T)) {
+      cur = c;
+      if (c < bestCost) { bestCost = c; bestP.set(p); bestBend.set(bend); }
+    } else {
+      restore();
     }
   }
-  timer = setTimeout(chunk, 0);
 
-  return { cancel: () => clearTimeout(timer) };
+  return runInSlices(
+    (elapsed, until) => {
+      if (n === 0 || elapsed() >= DURATION_MS) return true;
+      while (performance.now() < until) {
+        const t = Math.min(1, elapsed() / DURATION_MS);
+        for (let k = 0; k < 10; k++) step(t);
+      }
+      return false;
+    },
+    ms => onProgress?.(Math.min(1, ms / DURATION_MS)),
+    () => onDone({ p: bestP, bend: bestBend }),
+  );
 }
 
 const easeInOutCubic = t => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
