@@ -9,13 +9,14 @@ import { R, bendControls, loopFrame, loopControls, sampleCubic } from './geometr
 //   boxes  per-edge bounding box [x0, y0, x1, y1, ...]
 //   curved per-edge flag
 //   nbrs   per-vertex neighbour indices (non-loop edges), used to aim loops
-//   pairs  antiparallel edge pairs [k1, k2] that must not lie on top of each other
+//   pairs  antiparallel edge pairs [k1, k2]
+//   rank   per-vertex position of its label in a, b, …, z, aa, … order
 
 const CURVE_SEGMENTS = 8;
 const LOOP_SEGMENTS = 12;
 const FIT_PAD = 24;
 
-function makeLayout(n, p, edges, bend, weighted) {
+function makeLayout(n, p, edges, bend, { weighted, directed, rank }) {
   const m = edges.length;
   const nbrs = Array.from({ length: n }, () => new Set());
   const incident = Array.from({ length: n }, () => []);
@@ -31,7 +32,7 @@ function makeLayout(n, p, edges, bend, weighted) {
     }
   });
   const L = {
-    n, m, p, edges, bend, weighted, pairs, incident,
+    n, m, p, edges, bend, weighted, directed, rank, pairs, incident,
     nbrs: nbrs.map(s => [...s]),
     polys: new Array(m),
     boxes: new Float64Array(4 * m),
@@ -55,7 +56,12 @@ export function buildLayout(graph, { keepCtrl = false } = {}) {
     src: k,
   }));
   const bend = Float64Array.from(graph.edges, e => (e.u === e.v ? 0 : effectiveBend(graph, e)));
-  return makeLayout(graph.vertices.length, p, edges, bend, graph.weighted);
+  // Labels sort like their default names: shorter first, then alphabetically.
+  const labels = graph.vertices.map(v => v.label);
+  const sorted = [...new Set(labels)].sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+  const rank = Int32Array.from(labels, l => sorted.indexOf(l));
+  return makeLayout(graph.vertices.length, p, edges, bend,
+    { weighted: graph.weighted, directed: graph.directed, rank });
 }
 
 // The layout restricted to `vertices` (indices into L), in that order.
@@ -71,7 +77,8 @@ export function subLayout(L, vertices) {
     edges.push({ ...e, a: index.get(e.a), b: index.get(e.b), src: k });
     bend.push(L.bend[k]);
   });
-  return makeLayout(vertices.length, p, edges, Float64Array.from(bend), L.weighted);
+  return makeLayout(vertices.length, p, edges, Float64Array.from(bend),
+    { weighted: L.weighted, directed: L.directed, rank: Int32Array.from(vertices, v => L.rank[v]) });
 }
 
 export function edgeShape(L, k) {

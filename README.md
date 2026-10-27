@@ -33,21 +33,31 @@ The right pane shows a copy of your graph. In **Priorities**, drag items (or use
 
 | Priority | Prefers layouts where… |
 | --- | --- |
-| Vertices don't cross edges | no edge runs through a vertex it doesn't belong to |
 | Minimize crossings | as few edges cross as possible (curves, loops and edges overlapping at a shared vertex all count) |
 | Maximize straight edges | edges are straight; Beautify may curve an edge, but this rule pushes back |
 | Edge length variance | edges are about the same length (in weighted graphs, length tracks weight) |
 | Vertex density variance | vertices are evenly spaced |
 | Graph area | the graph is compact |
-| Distance from center | vertices sit close to the origin, the middle of the canvas |
+| Maximize radial symmetry | the graph looks the same after rotating it about its centre (by a half, third, … turn), edges included |
 | Vertices on the grid | vertices fit on the coarsest possible grid, so they line up in rows and columns |
+| Vertices in order | each vertex dominates every vertex with a later name: a sits at least as far right and as high up as b, and so on |
 
-The number beside each priority is the current layout's score (lower is better). Vertices always keep a minimum distance apart, and a pair of opposite directed edges never lies on top of itself.
+The number beside each priority is the current layout's score (lower is better).
+
+**Never allowed (Advanced settings)**
+
+Some things are not traded off against the priorities at all. Beautify won't produce a layout with:
+
+- overlapping edges (closer than 4 px where they run side by side)
+- an edge passing through a vertex it doesn't belong to (closer than 6 px to its circle)
+- vertices closer than 30 px to each other
+
+Open **Advanced settings** under Priorities to switch any of these off or change its distance. Distances are on screen, at the size the graph is shown. If no layout can meet them (say, a spacing too large to fit), Beautify shows its best attempt and tells you which rule it couldn't keep.
 
 **Methods**
 
 - **Balanced** weighs all priorities together; each counts 0.3× as much as the one above it.
-- **Strict** handles one priority at a time: a better score on a higher priority always wins, however much worse everything below gets. It adds vertices one by one in random order, putting each in the best spot, then keeps re-placing vertices until nothing improves. With a priority that varies smoothly (area, edge length, center) at the top, the ones below rarely get a say.
+- **Strict** handles one priority at a time: a better score on a higher priority always wins, however much worse everything below gets. It adds vertices one by one in random order, putting each in the best spot, then keeps re-placing vertices until nothing improves. With a priority that varies smoothly (area, edge length, symmetry) at the top, the ones below rarely get a say.
 
 While the right pane still matches your graph, it follows your edits. Once beautified, it keeps its layout: **Copy from your graph** replaces it with your current drawing, **← Copy to your graph** replaces your drawing with it, and Beautify always starts from your latest edits.
 
@@ -75,6 +85,7 @@ Then open http://localhost:8417. Run `node build.mjs` to refresh the single-file
 | `src/graph.js` | graph model, JSON import/export |
 | `src/layout.js` | fast layout representation, fit-to-pane |
 | `src/heuristics.js` | the priority scores |
+| `src/constraints.js` | the never-allowed rules and their settings |
 | `src/optimizer.js` | Balanced (annealing) method and the move animation |
 | `src/strict.js` | Strict method |
 | `src/presets.js` | placeholder for graph types |

@@ -1,8 +1,9 @@
 import { createGraph, cloneGraph, serializeGraph, parseGraph, W, H } from './graph.js';
 import { renderGraph, edgeControls } from './render.js';
 import { createEditor } from './editor.js';
-import { HEURISTICS, evaluate, countOverlaps } from './heuristics.js';
-import { buildLayout, fitLayout, placeOnCircle } from './layout.js';
+import { HEURISTICS, evaluate } from './heuristics.js';
+import { CONSTRAINTS, defaultConstraints, violations, brokenRules } from './constraints.js';
+import { buildLayout, fitLayout, placeOnCircle, updatePolys } from './layout.js';
 import { optimizeAnneal, animate } from './optimizer.js';
 import { optimizeStrict } from './strict.js';
 import { PRESETS } from './presets.js';
@@ -106,13 +107,17 @@ $('#beautify').addEventListener('click', () => {
   status.textContent = 'Optimizing… 0%';
   $('#beautify').disabled = true;
   scaleInput.disabled = true;
-  run = ALGORITHMS[$('#algorithm').value](copy, order, PRESETS[$('#preset').value], {
+  const cs = readConstraints();
+  run = ALGORITHMS[$('#algorithm').value](copy, order, PRESETS[$('#preset').value], cs, {
     onProgress(t) { status.textContent = `Optimizing… ${Math.round(t * 100)}%`; },
     onDone(result) {
       status.textContent = 'Moving to the new layout…';
-      run = animateTo(result, () => {
+      const broken = [];
+      run = animateTo(result, cs, broken, () => {
         stopRun();
-        status.textContent = 'Done. Press Beautify again to try another layout.';
+        status.textContent = broken.length
+          ? `Done, but no layout was found without ${broken.join(' or ')}. Try Beautify again or relax Advanced settings.`
+          : 'Done. Press Beautify again to try another layout.';
       });
     },
   });
@@ -121,17 +126,22 @@ $('#beautify').addEventListener('click', () => {
 const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
 
 // Fit the result to the canvas, then glide vertices there while every edge
-// morphs from its current shape into its new one.
-function animateTo(result, onDone) {
+// morphs from its current shape into its new one. Any "never allowed" rule
+// the final layout still breaks is pushed onto `broken`.
+function animateTo(result, cs, broken, onDone) {
   const L = buildLayout(copy);
   L.p.set(result.p);
   L.bend.set(result.bend);
   fitLayout(L);
-  // Overlapping edges are never shown. The optimizers already avoid them;
-  // this is the last line of defence.
-  if (countOverlaps(L)) {
+  // The optimizers already respect the never-allowed rules; this is the last
+  // line of defence, measured exactly as shown.
+  const resultBroken = violations(L, cs);
+  if (resultBroken) {
+    const p = L.p.slice(), bend = L.bend.slice();
     placeOnCircle(L);
     fitLayout(L);
+    if (violations(L, cs) >= resultBroken) { L.p.set(p); L.bend.set(bend); updatePolys(L); }
+    broken.push(...brokenRules(L, cs));
   }
 
   const s = scaleInput.value / 100;
@@ -228,6 +238,28 @@ exampleSel.addEventListener('change', () => {
 
 $('#delete').addEventListener('click', () => editor.deleteSelection());
 $('#clear').addEventListener('click', () => loadGraph(createGraph(state.graph)));
+
+// ---- advanced settings: never-allowed rules --------------------------------
+
+const constraintsBox = $('#constraints');
+const defaults = defaultConstraints();
+for (const c of CONSTRAINTS) {
+  const row = document.createElement('div');
+  row.className = 'constraint';
+  row.innerHTML = `<input type="checkbox" id="c-${c.id}" checked>
+    <label class="name" for="c-${c.id}">${c.name}</label>
+    <label class="detail">${c.label}
+      <input type="number" id="c-${c.id}-px" min="0" max="200" step="1" value="${defaults[c.id].px}"> px</label>`;
+  row.querySelector('[type=checkbox]').addEventListener('change', e => row.classList.toggle('off', !e.target.checked));
+  constraintsBox.append(row);
+}
+
+function readConstraints() {
+  return Object.fromEntries(CONSTRAINTS.map(c => {
+    const px = parseFloat($(`#c-${c.id}-px`).value);
+    return [c.id, { on: $(`#c-${c.id}`).checked, px: Number.isFinite(px) && px >= 0 ? px : c.px }];
+  }));
+}
 
 // ---- reorderable heuristic list -------------------------------------------
 

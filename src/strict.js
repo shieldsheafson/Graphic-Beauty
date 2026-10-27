@@ -1,13 +1,15 @@
-import { BY_ID, penalty, countOverlaps, OVERLAP_MARGIN } from './heuristics.js';
+import { BY_ID } from './heuristics.js';
 import { buildLayout, subLayout, updatePolys, placeOnCircle } from './layout.js';
+import { violations, SAFETY_MARGIN } from './constraints.js';
 import { W, H, MARGIN } from './graph.js';
 import { runInSlices, clampX, clampY } from './optimizer.js';
 
 // Strict-priority layout: vertices are added one at a time in random order,
 // each placed at the spot that is best for the top rule; lower rules only
 // break exact ties. Then vertices are repeatedly re-placed the same way until
-// a full pass changes nothing or the time budget runs out. Overlapping edges
-// come before every rule, so a spot that avoids them always wins.
+// a full pass changes nothing or the time budget runs out. The "never
+// allowed" rules (constraints.js) come before every priority, so a spot that
+// keeps them always wins.
 
 const STEP = 25; // spacing of the candidate lattice
 const REFINE_STEPS = [12, 6, 3];
@@ -37,11 +39,11 @@ function shuffle(xs) {
   return xs;
 }
 
-export function optimizeStrict(graph, order, preset, { onProgress, onDone }) {
+export function optimizeStrict(graph, order, preset, constraints, { onProgress, onDone }) {
   const full = buildLayout(graph);
   const n = full.n;
-  const overlaps = L => countOverlaps(L, OVERLAP_MARGIN);
-  const rules = [overlaps, penalty, ...order.map(id => BY_ID[id].cost)];
+  const broken = L => violations(L, constraints, SAFETY_MARGIN);
+  const rules = [broken, ...order.map(id => BY_ID[id].cost)];
   const score = L => rules.map(f => f(L));
 
   // Lattice points, plus points sharing a row or column with another vertex
@@ -162,7 +164,12 @@ export function optimizeStrict(graph, order, preset, { onProgress, onDone }) {
       full.p.set(resultP);
       full.bend.set(resultBend);
       updatePolys(full);
-      if (overlaps(full)) placeOnCircle(full);
+      const resultBroken = broken(full);
+      if (resultBroken) {
+        placeOnCircle(full);
+        // Keep whichever of the two breaks the rules less.
+        if (broken(full) >= resultBroken) { full.p.set(resultP); full.bend.set(resultBend); }
+      }
       onDone({ p: full.p, bend: full.bend });
     },
   );

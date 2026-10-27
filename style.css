@@ -113,6 +113,22 @@ main {
 .scale output { width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
 
 .algo { margin-top: 12px; width: 100%; }
+
+.advanced { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.advanced summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.advanced .hint { margin-bottom: 8px; }
+.constraint { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; padding: 6px 0; }
+.constraint .detail { grid-column: 2; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.constraint input[type=number] {
+  width: 4.5em;
+  font: inherit;
+  color: var(--text);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+.constraint.off .name { color: var(--muted); text-decoration: line-through; }
 .algo select { flex: 1; min-width: 0; }
 
 /* ---- canvas ---- */

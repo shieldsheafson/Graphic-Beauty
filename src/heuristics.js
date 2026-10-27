@@ -5,10 +5,7 @@ import { buildLayout, fitScale } from './layout.js';
 // Every rule scores a layout (see layout.js), "lower is prettier", roughly in
 // [0, 1]. Edge shapes are the sampled curves that are actually drawn.
 
-const MIN_VERTEX_GAP = 70;
-const CLEARANCE = R + 6; // an edge closer than this to a vertex's centre runs through it
 const OVERLAP_ANGLE = 0.15; // radians: edges leaving a vertex this close together look merged
-const MIN_PAIR_SEPARATION = 0.3; // bend difference that keeps antiparallel edges apart
 
 const cv2 = xs => {
   if (xs.length < 2) return 0;
@@ -56,18 +53,13 @@ const boxesMeet = (B, i, j, pad) =>
   && B[4 * i + 1] - pad <= B[4 * j + 3] && B[4 * j + 1] - pad <= B[4 * i + 3];
 
 // ---- overlapping edges ----------------------------------------------------
-// Two edges overlap when their drawings run within OVERLAP_DIST of each other,
+// Two edges overlap when their drawings run within `dist` of each other,
 // nearly parallel, for at least OVERLAP_MIN_LEN outside any shared vertex's
-// disc. This is never allowed in a beautified layout (see optimizers).
-// Distances are in screen pixels after the layout is fitted to the pane:
-// scaling up stretches the run where a curve grazes another edge.
+// disc. Distances are in screen pixels after the layout is fitted to the
+// pane: scaling up stretches the run where a curve grazes another edge.
 
-const OVERLAP_DIST = 4;
 const OVERLAP_MIN_LEN = 6;
 const OVERLAP_MAX_SIN = 0.2; // ~11°; steeper meetings are crossings, not overlaps
-// Optimizers test with this much extra slack, so nothing they accept sits
-// right at the threshold of the final check.
-export const OVERLAP_MARGIN = 1.5;
 
 // Midpoint [x, y] of the stretch where segment cd runs within `tol` of segment
 // ab for at least `minLen`, or null.
@@ -97,8 +89,7 @@ function segOverlap(ax, ay, bx, by, cx, cy, dx, dy, tol, minLen) {
   return [ax + ux * t, ay + uy * t];
 }
 
-function polysOverlap(P, Q, shared, p, s, margin) {
-  const tol = (OVERLAP_DIST * margin) / s, minLen = OVERLAP_MIN_LEN / margin / s, disc = (R + OVERLAP_DIST) / s;
+function polysOverlap(P, Q, shared, p, tol, minLen, disc) {
   for (let i = 0; i + 3 < P.length; i += 2) {
     for (let j = 0; j + 3 < Q.length; j += 2) {
       const mid = segOverlap(P[i], P[i + 1], P[i + 2], P[i + 3], Q[j], Q[j + 1], Q[j + 2], Q[j + 3], tol, minLen);
@@ -111,18 +102,18 @@ function polysOverlap(P, Q, shared, p, s, margin) {
   return false;
 }
 
-// Number of edge pairs that lie on top of each other somewhere.
-// margin > 1 makes the test stricter (see OVERLAP_MARGIN).
-export function countOverlaps(L, margin = 1) {
+// Number of edge pairs that lie on top of each other somewhere: closer than
+// `dist` screen pixels. margin > 1 makes the test stricter.
+export function countOverlaps(L, dist = 4, margin = 1, scale = fitScale(L)) {
   const { edges, polys, boxes, p } = L;
-  const s = fitScale(L);
+  const tol = (dist * margin) / scale, minLen = OVERLAP_MIN_LEN / margin / scale, disc = (R + dist) / scale;
   let count = 0;
   for (let i = 0; i < L.m; i++) {
     for (let j = i + 1; j < L.m; j++) {
-      if (!boxesMeet(boxes, i, j, (OVERLAP_DIST * margin) / s)) continue;
+      if (!boxesMeet(boxes, i, j, tol)) continue;
       const a = edges[i], b = edges[j];
       const shared = [a.a, a.b].filter((v, k, xs) => (v === b.a || v === b.b) && xs.indexOf(v) === k);
-      if (polysOverlap(polys[i], polys[j], shared, p, s, margin)) count++;
+      if (polysOverlap(polys[i], polys[j], shared, p, tol, minLen, disc)) count++;
     }
   }
   return count;
@@ -180,19 +171,74 @@ export function countCrossings(L) {
   return count;
 }
 
-export function countVertexHits(L) {
+// Vertex/edge pairs where the edge passes within `clearance` (layout units) of
+// the centre of a vertex it doesn't belong to.
+export function countVertexHits(L, clearance) {
   const { p, edges, polys, boxes } = L;
   let count = 0;
   for (let v = 0; v < L.n; v++) {
     const x = p[2 * v], y = p[2 * v + 1];
     for (let k = 0; k < L.m; k++) {
       if (edges[k].a === v || edges[k].b === v) continue;
-      if (x < boxes[4 * k] - CLEARANCE || x > boxes[4 * k + 2] + CLEARANCE
-        || y < boxes[4 * k + 1] - CLEARANCE || y > boxes[4 * k + 3] + CLEARANCE) continue;
-      if (polyDist(x, y, polys[k]) < CLEARANCE) count++;
+      if (x < boxes[4 * k] - clearance || x > boxes[4 * k + 2] + clearance
+        || y < boxes[4 * k + 1] - clearance || y > boxes[4 * k + 3] + clearance) continue;
+      if (polyDist(x, y, polys[k]) < clearance) count++;
     }
   }
   return count;
+}
+
+// How far vertex pairs fall short of `gap` (layout units, centre to centre),
+// as a sum of squared fractions: 0 when every pair is far enough apart.
+export function spacingShortfall({ n, p }, gap) {
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const d = Math.hypot(p[2 * i] - p[2 * j], p[2 * i + 1] - p[2 * j + 1]);
+      if (d < gap) s += ((gap - d) / gap) ** 2;
+    }
+  }
+  return s;
+}
+
+// Rotational symmetry about the vertices' centroid: for the best k-fold
+// rotation (k = 2..12), how far rotated vertices land from real ones and
+// what share of edges fail to land on edges. 0 is perfectly symmetric.
+export function symmetryCost({ n, p, edges, directed }) {
+  if (n < 2) return 0;
+  let cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) { cx += p[2 * i]; cy += p[2 * i + 1]; }
+  cx /= n; cy /= n;
+  let radius = 0;
+  for (let i = 0; i < n; i++) radius += Math.hypot(p[2 * i] - cx, p[2 * i + 1] - cy);
+  radius /= n;
+  if (radius < 1) return 0;
+  const has = new Set();
+  for (const e of edges) {
+    has.add(e.a * n + e.b);
+    if (!directed) has.add(e.b * n + e.a);
+  }
+  const image = new Int32Array(n);
+  let best = 1;
+  for (let k = 2; k <= Math.min(12, Math.max(2, n)); k++) {
+    const cos = Math.cos((2 * Math.PI) / k), sin = Math.sin((2 * Math.PI) / k);
+    let drift = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = p[2 * i] - cx, dy = p[2 * i + 1] - cy;
+      const x = cx + dx * cos - dy * sin, y = cy + dx * sin + dy * cos;
+      let nearest = Infinity;
+      for (let j = 0; j < n; j++) {
+        const d = Math.hypot(p[2 * j] - x, p[2 * j + 1] - y);
+        if (d < nearest) { nearest = d; image[i] = j; }
+      }
+      drift += nearest;
+    }
+    let kept = 0;
+    for (const e of edges) if (has.has(image[e.a] * n + image[e.b])) kept++;
+    const missed = edges.length ? 1 - kept / edges.length : 0;
+    best = Math.min(best, (Math.min(1, drift / n / radius) + missed) / 2);
+  }
+  return best;
 }
 
 // The coarsest square grid (anchored at the layout's top-left vertex extent)
@@ -224,11 +270,6 @@ export function bestGrid(L) {
 }
 
 export const HEURISTICS = [
-  {
-    id: 'vertexEdge',
-    name: "Vertices don't cross edges",
-    cost: L => countVertexHits(L) / Math.max(1, L.n),
-  },
   {
     id: 'crossings',
     name: 'Minimize crossings',
@@ -289,43 +330,35 @@ export const HEURISTICS = [
     },
   },
   {
-    id: 'center',
-    name: 'Distance from center',
-    // Mean distance of the vertices from the origin, the middle of the canvas.
-    cost({ p, n }) {
-      if (n === 0) return 0;
-      let s = 0;
-      for (let i = 0; i < n; i++) s += Math.hypot(p[2 * i] - W / 2, p[2 * i + 1] - H / 2);
-      return s / n / Math.hypot(W / 2, H / 2);
-    },
+    id: 'symmetry',
+    name: 'Maximize radial symmetry',
+    cost: symmetryCost,
   },
   {
     id: 'grid',
     name: 'Vertices on the grid',
     cost: L => bestGrid(L).cost,
   },
+  {
+    id: 'order',
+    name: 'Vertices in order',
+    // Share of label pairs where the earlier label (a before b) fails to
+    // dominate the later one: be at least as far right and as high up.
+    cost({ n, p, rank }) {
+      let pairs = 0, ordered = 0;
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          if (rank[i] >= rank[j]) continue;
+          pairs++;
+          if (p[2 * i] >= p[2 * j] && p[2 * i + 1] <= p[2 * j + 1]) ordered++;
+        }
+      }
+      return pairs ? 1 - ordered / pairs : 0;
+    },
+  },
 ];
 
 export const BY_ID = Object.fromEntries(HEURISTICS.map(h => [h.id, h]));
-
-// Hard constraints, always applied: vertices keep their distance and
-// antiparallel edges don't sit on top of each other. Without this, "area"
-// would collapse the graph to a point.
-export function penalty({ n, p, pairs, bend }) {
-  let s = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const d = Math.hypot(p[2 * i] - p[2 * j], p[2 * i + 1] - p[2 * j + 1]);
-      if (d < MIN_VERTEX_GAP) s += ((MIN_VERTEX_GAP - d) / MIN_VERTEX_GAP) ** 2;
-    }
-  }
-  // Reversed edges bend in mirrored frames, so they coincide when bends sum to 0.
-  for (const [k1, k2] of pairs) {
-    const sep = Math.abs(bend[k1] + bend[k2]);
-    if (sep < MIN_PAIR_SEPARATION) s += ((MIN_PAIR_SEPARATION - sep) / MIN_PAIR_SEPARATION) ** 2;
-  }
-  return s;
-}
 
 export function evaluate(graph) {
   const L = buildLayout(graph, { keepCtrl: true });

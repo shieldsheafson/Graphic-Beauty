@@ -1,10 +1,10 @@
-import { BY_ID, penalty, bestGrid, countOverlaps, OVERLAP_MARGIN } from './heuristics.js';
+import { BY_ID, bestGrid } from './heuristics.js';
 import { buildLayout, updatePolys, placeOnCircle } from './layout.js';
+import { violations, SAFETY_MARGIN } from './constraints.js';
 import { W, H, MARGIN } from './graph.js';
 
 // Each step down the priority list is worth this fraction of the one above.
 const DECAY = 0.3;
-const PENALTY_WEIGHT = 10;
 const BEND_REGULARIZER = 1e-3; // keeps unused curvature from drifting when nothing cares
 const MAX_BEND = 0.8;
 const DURATION_MS = 3000; // total compute time spent annealing
@@ -37,10 +37,10 @@ export function runInSlices(work, onProgress, onDone) {
 }
 
 // Simulated annealing on vertex positions and edge bends, scored by a
-// weighted sum of the ordered rules. Overlapping edges are a hard rule: a
-// move that adds overlaps is always rejected, and the result is always the
-// best overlap-free layout found. Finishes with onDone({ p, bend }).
-export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
+// weighted sum of the ordered rules. "Never allowed" rules (constraints.js)
+// are hard: a move that breaks them more is always rejected, and the result
+// is the best layout with the fewest violations. Finishes with onDone({ p, bend }).
+export function optimizeAnneal(graph, order, preset, constraints, { onProgress, onDone }) {
   const L = buildLayout(graph);
   const { n, p, bend } = L;
   const bendable = L.edges.map((e, k) => k).filter(k => !L.edges[k].loop);
@@ -49,26 +49,29 @@ export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
   const useGrid = order.includes('grid');
 
   const cost = () => {
-    let c = PENALTY_WEIGHT * penalty(L);
+    let c = 0;
     for (let k = 0; k < hs.length; k++) c += ws[k] * hs[k].cost(L);
     for (const k of bendable) c += BEND_REGULARIZER * Math.abs(bend[k]);
     return c;
   };
 
+  const broken = () => violations(L, constraints, SAFETY_MARGIN);
   let cur = cost();
-  let curOverlaps = countOverlaps(L, OVERLAP_MARGIN);
+  let curBroken = broken();
   const bestP = p.slice(), bestBend = bend.slice();
-  let bestCost = cur, bestOverlaps = curOverlaps;
+  let bestCost = cur, bestBroken = curBroken;
   const consider = () => {
-    if (curOverlaps < bestOverlaps || (curOverlaps === bestOverlaps && cur < bestCost)) {
-      bestOverlaps = curOverlaps; bestCost = cur; bestP.set(p); bestBend.set(bend);
+    if (curBroken < bestBroken - 1e-12 || (Math.abs(curBroken - bestBroken) <= 1e-12 && cur < bestCost)) {
+      bestBroken = curBroken; bestCost = cur; bestP.set(p); bestBend.set(bend);
     }
   };
-  // If the starting layout has overlaps, keep an overlap-free fallback in hand.
-  if (curOverlaps) {
+  // If the starting layout breaks a rule, keep the circle layout in hand in
+  // case it does better.
+  if (curBroken) {
     const start = p.slice(), startBend = bend.slice();
     placeOnCircle(L);
-    if (!countOverlaps(L, OVERLAP_MARGIN)) { bestOverlaps = 0; bestCost = cost(); bestP.set(p); bestBend.set(bend); }
+    const circleBroken = broken();
+    if (circleBroken < bestBroken) { bestBroken = circleBroken; bestCost = cost(); bestP.set(p); bestBend.set(bend); }
     p.set(start); bend.set(startBend); updatePolys(L);
   }
 
@@ -127,12 +130,12 @@ export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
     }
     updatePolys(L);
 
-    const overlaps = countOverlaps(L, OVERLAP_MARGIN);
-    if (overlaps > curOverlaps) { restore(); return; }
+    const b = broken();
+    if (b > curBroken + 1e-12) { restore(); return; }
     const c = cost();
-    if (overlaps < curOverlaps || c - cur <= 0 || Math.random() < Math.exp(-(c - cur) / T)) {
+    if (b < curBroken - 1e-12 || c - cur <= 0 || Math.random() < Math.exp(-(c - cur) / T)) {
       cur = c;
-      curOverlaps = overlaps;
+      curBroken = b;
       consider();
     } else {
       restore();
