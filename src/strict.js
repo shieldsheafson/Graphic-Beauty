@@ -1,12 +1,13 @@
-import { BY_ID, penalty } from './heuristics.js';
-import { buildLayout, subLayout, updatePolys } from './layout.js';
+import { BY_ID, penalty, countOverlaps, OVERLAP_MARGIN } from './heuristics.js';
+import { buildLayout, subLayout, updatePolys, placeOnCircle } from './layout.js';
 import { W, H, MARGIN } from './graph.js';
 import { runInSlices, clampX, clampY } from './optimizer.js';
 
 // Strict-priority layout: vertices are added one at a time in random order,
 // each placed at the spot that is best for the top rule; lower rules only
 // break exact ties. Then vertices are repeatedly re-placed the same way until
-// a full pass changes nothing or the time budget runs out.
+// a full pass changes nothing or the time budget runs out. Overlapping edges
+// come before every rule, so a spot that avoids them always wins.
 
 const STEP = 25; // spacing of the candidate lattice
 const REFINE_STEPS = [12, 6, 3];
@@ -39,7 +40,8 @@ function shuffle(xs) {
 export function optimizeStrict(graph, order, preset, { onProgress, onDone }) {
   const full = buildLayout(graph);
   const n = full.n;
-  const rules = [penalty, ...order.map(id => BY_ID[id].cost)];
+  const overlaps = L => countOverlaps(L, OVERLAP_MARGIN);
+  const rules = [overlaps, penalty, ...order.map(id => BY_ID[id].cost)];
   const score = L => rules.map(f => f(L));
 
   // Lattice points, plus points sharing a row or column with another vertex
@@ -156,6 +158,12 @@ export function optimizeStrict(graph, order, preset, { onProgress, onDone }) {
     ms => onProgress?.(refining
       ? 0.6 + 0.4 * Math.min(1, (ms - refineStart) / REFINE_MS)
       : 0.6 * (placed / Math.max(1, n))),
-    () => onDone({ p: resultP, bend: resultBend }),
+    () => {
+      full.p.set(resultP);
+      full.bend.set(resultBend);
+      updatePolys(full);
+      if (overlaps(full)) placeOnCircle(full);
+      onDone({ p: full.p, bend: full.bend });
+    },
   );
 }

@@ -1,8 +1,8 @@
 import { createGraph, cloneGraph, serializeGraph, parseGraph, W, H } from './graph.js';
 import { renderGraph, edgeControls } from './render.js';
 import { createEditor } from './editor.js';
-import { HEURISTICS, evaluate } from './heuristics.js';
-import { buildLayout, fitLayout } from './layout.js';
+import { HEURISTICS, evaluate, countOverlaps } from './heuristics.js';
+import { buildLayout, fitLayout, placeOnCircle } from './layout.js';
 import { optimizeAnneal, animate } from './optimizer.js';
 import { optimizeStrict } from './strict.js';
 import { PRESETS } from './presets.js';
@@ -127,6 +127,12 @@ function animateTo(result, onDone) {
   L.p.set(result.p);
   L.bend.set(result.bend);
   fitLayout(L);
+  // Overlapping edges are never shown. The optimizers already avoid them;
+  // this is the last line of defence.
+  if (countOverlaps(L)) {
+    placeOnCircle(L);
+    fitLayout(L);
+  }
 
   const s = scaleInput.value / 100;
   base = { pos: copy.vertices.map((_, i) => ({ x: L.p[2 * i], y: L.p[2 * i + 1] })), ctrl: copy.edges.map(() => null) };

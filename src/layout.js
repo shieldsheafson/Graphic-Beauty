@@ -1,4 +1,4 @@
-import { W, H, effectiveBend } from './graph.js';
+import { W, H, AUTO_BEND, effectiveBend } from './graph.js';
 import { R, bendControls, loopFrame, loopControls, sampleCubic } from './geometry.js';
 
 // A flat, fast view of a graph's drawing that the scorers and optimizers share.
@@ -117,6 +117,21 @@ export function updatePolys(L) {
   }
 }
 
+// Vertices evenly around a circle, straight edges except antiparallel pairs.
+// Chords of a circle can't lie along each other, so this layout never has
+// overlapping edges: the fallback when an optimizer can't find one that doesn't.
+export function placeOnCircle(L) {
+  const r = Math.min(W, H) / 2 - 2 * R;
+  for (let i = 0; i < L.n; i++) {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / L.n;
+    L.p[2 * i] = W / 2 + r * Math.cos(a);
+    L.p[2 * i + 1] = H / 2 + r * Math.sin(a);
+  }
+  L.bend.fill(0);
+  for (const [k1, k2] of L.pairs) { L.bend[k1] = AUTO_BEND; L.bend[k2] = AUTO_BEND; }
+  updatePolys(L);
+}
+
 // Bounding box of everything drawn: vertex discs and edge shapes.
 function extent(L) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -131,17 +146,24 @@ function extent(L) {
   return { x0, y0, x1, y1 };
 }
 
+// How much fitLayout would enlarge this layout. Vertex discs don't grow with
+// the layout, so solve for the part of the extent that does.
+export function fitScale(L) {
+  const { x0, y0, x1, y1 } = extent(L);
+  if (!L.n || Math.max(x1 - x0, y1 - y0) - 2 * R <= 1) return 1;
+  const sx = (W - 2 * FIT_PAD - 2 * R) / Math.max(1e-6, x1 - x0 - 2 * R);
+  const sy = (H - 2 * FIT_PAD - 2 * R) / Math.max(1e-6, y1 - y0 - 2 * R);
+  return Math.min(sx, sy);
+}
+
 // Uniformly scale and center the layout so its drawing fills the canvas.
-// Vertex discs don't grow with the layout, so it takes two passes to settle.
+// Loops and discs don't scale exactly with it, so it takes two passes to settle.
 export function fitLayout(L) {
   if (!L.n) return;
   for (let pass = 0; pass < 2; pass++) {
     const { x0, y0, x1, y1 } = extent(L);
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    // The disc padding (2R) doesn't scale, so solve for the part that does.
-    const sx = (W - 2 * FIT_PAD - 2 * R) / Math.max(1e-6, x1 - x0 - 2 * R);
-    const sy = (H - 2 * FIT_PAD - 2 * R) / Math.max(1e-6, y1 - y0 - 2 * R);
-    const s = Math.max(x1 - x0, y1 - y0) - 2 * R > 1 ? Math.min(sx, sy) : 1;
+    const s = fitScale(L);
     for (let i = 0; i < L.n; i++) {
       L.p[2 * i] = W / 2 + (L.p[2 * i] - cx) * s;
       L.p[2 * i + 1] = H / 2 + (L.p[2 * i + 1] - cy) * s;

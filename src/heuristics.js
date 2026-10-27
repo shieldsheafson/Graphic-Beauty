@@ -1,6 +1,6 @@
 import { W, H } from './graph.js';
 import { R } from './geometry.js';
-import { buildLayout } from './layout.js';
+import { buildLayout, fitScale } from './layout.js';
 
 // Every rule scores a layout (see layout.js), "lower is prettier", roughly in
 // [0, 1]. Edge shapes are the sampled curves that are actually drawn.
@@ -54,6 +54,79 @@ function segHit(ax, ay, bx, by, cx, cy, dx, dy) {
 const boxesMeet = (B, i, j, pad) =>
   B[4 * i] - pad <= B[4 * j + 2] && B[4 * j] - pad <= B[4 * i + 2]
   && B[4 * i + 1] - pad <= B[4 * j + 3] && B[4 * j + 1] - pad <= B[4 * i + 3];
+
+// ---- overlapping edges ----------------------------------------------------
+// Two edges overlap when their drawings run within OVERLAP_DIST of each other,
+// nearly parallel, for at least OVERLAP_MIN_LEN outside any shared vertex's
+// disc. This is never allowed in a beautified layout (see optimizers).
+// Distances are in screen pixels after the layout is fitted to the pane:
+// scaling up stretches the run where a curve grazes another edge.
+
+const OVERLAP_DIST = 4;
+const OVERLAP_MIN_LEN = 6;
+const OVERLAP_MAX_SIN = 0.2; // ~11°; steeper meetings are crossings, not overlaps
+// Optimizers test with this much extra slack, so nothing they accept sits
+// right at the threshold of the final check.
+export const OVERLAP_MARGIN = 1.5;
+
+// Midpoint [x, y] of the stretch where segment cd runs within `tol` of segment
+// ab for at least `minLen`, or null.
+function segOverlap(ax, ay, bx, by, cx, cy, dx, dy, tol, minLen) {
+  const len = Math.hypot(bx - ax, by - ay), len2 = Math.hypot(dx - cx, dy - cy);
+  if (len < 1e-9 || len2 < 1e-9) return null;
+  const ux = (bx - ax) / len, uy = (by - ay) / len;
+  if (Math.abs(ux * (dy - cy) - uy * (dx - cx)) / len2 > OVERLAP_MAX_SIN) return null;
+  // Signed distance from line ab and position along it, for c and d.
+  const hc = (cx - ax) * uy - (cy - ay) * ux, hd = (dx - ax) * uy - (dy - ay) * ux;
+  const tc = (cx - ax) * ux + (cy - ay) * uy, td = (dx - ax) * ux + (dy - ay) * uy;
+  // Part of cd (parameter s in [0, 1]) within OVERLAP_DIST of the line.
+  let s0 = 0, s1 = 1;
+  if (Math.abs(hd - hc) < 1e-9) {
+    if (Math.abs(hc) > tol) return null;
+  } else {
+    const a = (-tol - hc) / (hd - hc), b = (tol - hc) / (hd - hc);
+    s0 = Math.max(0, Math.min(a, b));
+    s1 = Math.min(1, Math.max(a, b));
+    if (s0 > s1) return null;
+  }
+  // ...and of that, the part lying alongside ab itself.
+  const t0 = Math.max(0, Math.min(tc + s0 * (td - tc), tc + s1 * (td - tc)));
+  const t1 = Math.min(len, Math.max(tc + s0 * (td - tc), tc + s1 * (td - tc)));
+  if (t1 - t0 < minLen) return null;
+  const t = (t0 + t1) / 2;
+  return [ax + ux * t, ay + uy * t];
+}
+
+function polysOverlap(P, Q, shared, p, s, margin) {
+  const tol = (OVERLAP_DIST * margin) / s, minLen = OVERLAP_MIN_LEN / margin / s, disc = (R + OVERLAP_DIST) / s;
+  for (let i = 0; i + 3 < P.length; i += 2) {
+    for (let j = 0; j + 3 < Q.length; j += 2) {
+      const mid = segOverlap(P[i], P[i + 1], P[i + 2], P[i + 3], Q[j], Q[j + 1], Q[j + 2], Q[j + 3], tol, minLen);
+      if (!mid) continue;
+      // Edges always meet inside the disc of a vertex they share.
+      if (shared.some(v => Math.hypot(mid[0] - p[2 * v], mid[1] - p[2 * v + 1]) < disc)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Number of edge pairs that lie on top of each other somewhere.
+// margin > 1 makes the test stricter (see OVERLAP_MARGIN).
+export function countOverlaps(L, margin = 1) {
+  const { edges, polys, boxes, p } = L;
+  const s = fitScale(L);
+  let count = 0;
+  for (let i = 0; i < L.m; i++) {
+    for (let j = i + 1; j < L.m; j++) {
+      if (!boxesMeet(boxes, i, j, (OVERLAP_DIST * margin) / s)) continue;
+      const a = edges[i], b = edges[j];
+      const shared = [a.a, a.b].filter((v, k, xs) => (v === b.a || v === b.b) && xs.indexOf(v) === k);
+      if (polysOverlap(polys[i], polys[j], shared, p, s, margin)) count++;
+    }
+  }
+  return count;
+}
 
 // Intersections between two polylines, ignoring any within R of (sx, sy):
 // edges that share a vertex always meet there.

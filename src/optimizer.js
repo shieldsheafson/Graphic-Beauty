@@ -1,5 +1,5 @@
-import { BY_ID, penalty, bestGrid } from './heuristics.js';
-import { buildLayout, updatePolys } from './layout.js';
+import { BY_ID, penalty, bestGrid, countOverlaps, OVERLAP_MARGIN } from './heuristics.js';
+import { buildLayout, updatePolys, placeOnCircle } from './layout.js';
 import { W, H, MARGIN } from './graph.js';
 
 // Each step down the priority list is worth this fraction of the one above.
@@ -37,7 +37,9 @@ export function runInSlices(work, onProgress, onDone) {
 }
 
 // Simulated annealing on vertex positions and edge bends, scored by a
-// weighted sum of the ordered rules. Finishes with onDone({ p, bend }).
+// weighted sum of the ordered rules. Overlapping edges are a hard rule: a
+// move that adds overlaps is always rejected, and the result is always the
+// best overlap-free layout found. Finishes with onDone({ p, bend }).
 export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
   const L = buildLayout(graph);
   const { n, p, bend } = L;
@@ -54,8 +56,21 @@ export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
   };
 
   let cur = cost();
+  let curOverlaps = countOverlaps(L, OVERLAP_MARGIN);
   const bestP = p.slice(), bestBend = bend.slice();
-  let bestCost = cur;
+  let bestCost = cur, bestOverlaps = curOverlaps;
+  const consider = () => {
+    if (curOverlaps < bestOverlaps || (curOverlaps === bestOverlaps && cur < bestCost)) {
+      bestOverlaps = curOverlaps; bestCost = cur; bestP.set(p); bestBend.set(bend);
+    }
+  };
+  // If the starting layout has overlaps, keep an overlap-free fallback in hand.
+  if (curOverlaps) {
+    const start = p.slice(), startBend = bend.slice();
+    placeOnCircle(L);
+    if (!countOverlaps(L, OVERLAP_MARGIN)) { bestOverlaps = 0; bestCost = cost(); bestP.set(p); bestBend.set(bend); }
+    p.set(start); bend.set(startBend); updatePolys(L);
+  }
 
   const savedP = p.slice(), savedBend = bend.slice();
   const save = () => { savedP.set(p); savedBend.set(bend); };
@@ -112,10 +127,13 @@ export function optimizeAnneal(graph, order, preset, { onProgress, onDone }) {
     }
     updatePolys(L);
 
+    const overlaps = countOverlaps(L, OVERLAP_MARGIN);
+    if (overlaps > curOverlaps) { restore(); return; }
     const c = cost();
-    if (c - cur <= 0 || Math.random() < Math.exp(-(c - cur) / T)) {
+    if (overlaps < curOverlaps || c - cur <= 0 || Math.random() < Math.exp(-(c - cur) / T)) {
       cur = c;
-      if (c < bestCost) { bestCost = c; bestP.set(p); bestBend.set(bend); }
+      curOverlaps = overlaps;
+      consider();
     } else {
       restore();
     }
